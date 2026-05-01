@@ -1,0 +1,6 @@
+{
+  "name": "B3-ROAD47",
+  "description": "Помощник для участников мотоциклетного квеста по Ленинградской области. Геолокация, карта точек, планировщик маршрутов и учет баллов.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": []
+}
