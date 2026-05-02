@@ -32,7 +32,7 @@ import {
 } from 'react-leaflet';
 import L from 'leaflet';
 import { useAppState } from './hooks/useAppState';
-import { formatDistance, getDistance, openInYandex, openRouteInYandex } from './lib/geoUtils';
+import { formatDistance, getDistance, openInYandex, openRouteInYandex, openInGoogle } from './lib/geoUtils';
 import { cn } from './lib/utils';
 import { Point, Visit } from './types';
 
@@ -51,6 +51,7 @@ export default function App() {
   const state = useAppState();
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [selectedPoint, setSelectedPoint] = useState<Point | null>(null);
+  const [navTarget, setNavTarget] = useState<{ lat: number, lon: number, points?: Point[] } | null>(null);
 
   if (state.isLoading) {
     return (
@@ -101,6 +102,7 @@ export default function App() {
             <RoutePlanner 
               key="route" 
               state={state} 
+              onNavClick={(target) => setNavTarget(target)}
             />
           )}
           {activeTab === 'rating' && (
@@ -125,6 +127,7 @@ export default function App() {
             point={selectedPoint} 
             state={state} 
             onClose={() => setSelectedPoint(null)} 
+            onNavClick={(target) => setNavTarget(target)}
           />
         )}
       </AnimatePresence>
@@ -137,6 +140,60 @@ export default function App() {
             onClose={() => state.setSelectedUserProfile(null)} 
             points={state.points}
           />
+        )}
+      </AnimatePresence>
+
+      {/* Navigator Choice Modal */}
+      <AnimatePresence>
+        {navTarget && (
+          <div className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm flex items-end justify-center p-4">
+             <motion.div 
+               initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+               className="bg-zinc-900 w-full max-w-sm rounded-[32px] p-8 border border-zinc-800 space-y-6"
+             >
+                <div className="text-center">
+                  <h3 className="text-2xl font-black italic">Куда поедем?</h3>
+                  <p className="text-zinc-500 text-xs font-bold uppercase tracking-widest mt-1">Выбери приложение</p>
+                </div>
+                <div className="space-y-3">
+                  <button 
+                    onClick={() => {
+                      if (navTarget.points) openRouteInYandex(navTarget.points, state.userLocation, 'navigator');
+                      else openInYandex(navTarget.lat, navTarget.lon, 'navigator');
+                      setNavTarget(null);
+                    }}
+                    className="w-full bg-amber-500 text-black font-black py-4 rounded-2xl flex items-center justify-center gap-3 active:scale-95 transition-transform"
+                  >
+                    <Navigation size={20} />
+                    Yandex Навигатор
+                  </button>
+                  <button 
+                    onClick={() => {
+                      if (navTarget.points) openRouteInYandex(navTarget.points, state.userLocation, 'maps');
+                      else openInYandex(navTarget.lat, navTarget.lon, 'maps');
+                      setNavTarget(null);
+                    }}
+                    className="w-full bg-zinc-800 text-zinc-100 font-black py-4 rounded-2xl flex items-center justify-center gap-3 active:scale-95 transition-transform"
+                  >
+                    <MapIcon size={20} className="text-blue-500" />
+                    Yandex Карты
+                  </button>
+                  <button 
+                    onClick={() => {
+                      if (navTarget.points) { 
+                        openInGoogle(navTarget.lat, navTarget.lon);
+                      } else openInGoogle(navTarget.lat, navTarget.lon);
+                      setNavTarget(null);
+                    }}
+                    className="w-full bg-zinc-800 text-zinc-100 font-black py-4 rounded-2xl flex items-center justify-center gap-3 active:scale-95 transition-transform"
+                  >
+                    <MapPin size={20} className="text-emerald-500" />
+                    Google Maps
+                  </button>
+                </div>
+                <button onClick={() => setNavTarget(null)} className="w-full text-zinc-500 font-bold py-2 text-sm uppercase tracking-widest">Отмена</button>
+             </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
@@ -386,7 +443,7 @@ function PointListView({ state, onPointClick }: { state: any, onPointClick: (p: 
   );
 }
 
-function PointDetails({ point, state, onClose }: { point: Point, state: any, onClose: () => void }) {
+function PointDetails({ point, state, onClose, onNavClick }: { point: Point, state: any, onClose: () => void, onNavClick: (t: any) => void }) {
   const [isCheckingIn, setIsCheckingIn] = useState(false);
 
   const handleCheckIn = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -429,7 +486,7 @@ function PointDetails({ point, state, onClose }: { point: Point, state: any, onC
           </div>
 
           <div className="grid grid-cols-2 gap-3 pt-4">
-            <button onClick={() => openInYandex(point.lat, point.lon)} className="bg-zinc-800 text-zinc-100 font-bold py-4 rounded-2xl flex flex-col items-center gap-1 active:bg-zinc-700">
+            <button onClick={() => onNavClick({ lat: point.lat, lon: point.lon })} className="bg-zinc-800 text-zinc-100 font-bold py-4 rounded-2xl flex flex-col items-center gap-1 active:bg-zinc-700">
               <Navigation size={20} className="text-amber-500" />
               <span className="text-[10px] uppercase">Навигатор</span>
             </button>
@@ -476,7 +533,7 @@ function PointDetails({ point, state, onClose }: { point: Point, state: any, onC
   );
 }
 
-function RoutePlanner({ state }: { state: any, key?: string }) {
+function RoutePlanner({ state, onNavClick }: { state: any, onNavClick: (t: any) => void, key?: string }) {
   const routePoints = state.currentRoute.map((id: number) => state.points.find((p: Point) => p.id === id)).filter(Boolean);
   const lastPoint = routePoints.length > 0 ? routePoints[routePoints.length - 1] : null;
   const recommendations = state.getRecommendation(lastPoint?.id);
@@ -484,7 +541,11 @@ function RoutePlanner({ state }: { state: any, key?: string }) {
 
   const startRoute = () => {
     if (routePoints.length === 0) return;
-    openRouteInYandex(routePoints, state.userLocation);
+    onNavClick({ 
+      lat: routePoints[routePoints.length - 1].lat, 
+      lon: routePoints[routePoints.length - 1].lon,
+      points: routePoints
+    });
   };
 
   return (
@@ -527,7 +588,7 @@ function RoutePlanner({ state }: { state: any, key?: string }) {
                    {i === 0 && state.userLocation && <span className="text-[9px] text-zinc-600 font-bold uppercase">{formatDistance(getDistance(state.userLocation.lat, state.userLocation.lon, p.lat, p.lon))}</span>}
                  </div>
                </div>
-               <button onClick={() => openInYandex(p.lat, p.lon)} className="p-2 text-zinc-500 active:text-amber-500 transition-colors"><Navigation size={20} /></button>
+               <button onClick={() => onNavClick({ lat: p.lat, lon: p.lon })} className="p-2 text-zinc-500 active:text-amber-500 transition-colors"><Navigation size={20} /></button>
             </div>
           </div>
         ))}

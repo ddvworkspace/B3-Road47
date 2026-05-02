@@ -22,35 +22,48 @@ export function formatDistance(km: number): string {
   return `${km.toFixed(1)}км`;
 }
 
-export function openInYandex(lat: number, lon: number) {
-  const url = `yandexmaps://build_route-on-map?lat_to=${lat}&lon_to=${lon}`;
+export function openInYandex(lat: number, lon: number, mode: 'maps' | 'navigator' = 'maps') {
+  const deepLink = mode === 'navigator' 
+    ? `yandexnavi://build_route_on_map?lat_to=${lat}&lon_to=${lon}`
+    : `yandexmaps://build_route-on-map?lat_to=${lat}&lon_to=${lon}`;
+    
   const webUrl = `https://yandex.ru/maps/?rtext=~${lat},${lon}&rtt=auto`;
   
   // Try to open deep link
-  window.location.href = url;
+  window.location.href = deepLink;
   
-  // Fallback after 500ms
-  setTimeout(() => {
-    window.open(webUrl, '_blank');
-  }, 500);
+  // Fallback after 1000ms if not in deep link capability (or show web maps)
+  if (mode === 'maps') {
+    setTimeout(() => {
+      window.open(webUrl, '_blank');
+    }, 1000);
+  }
 }
 
-export function openRouteInYandex(points: { lat: number, lon: number }[], userLoc: { lat: number, lon: number } | null = null) {
+export function openRouteInYandex(points: { lat: number, lon: number }[], userLoc: { lat: number, lon: number } | null = null, mode: 'maps' | 'navigator' = 'maps') {
   if (points.length === 0) return;
 
   const routePoints = userLoc ? [userLoc, ...points] : points;
-
-  // Format: rtext=lat_from,lon_from~lat_via1,lon_via1~lat_to,lon_to
   const rtext = routePoints.map(p => `${p.lat},${p.lon}`).join('~');
-  const webUrl = `https://yandex.ru/maps/?rtext=${rtext}&rtt=auto`;
   
-  const deepLink = `yandexmaps://maps.yandex.ru/?rtext=${rtext}&rtt=auto`;
+  let deepLink = '';
+  if (mode === 'navigator') {
+    // Navigator format for multi-point is often just to and points
+    const lastPoint = routePoints[routePoints.length - 1];
+    deepLink = `yandexnavi://build_route_on_map?lat_to=${lastPoint.lat}&lon_to=${lastPoint.lon}`;
+  } else {
+    deepLink = `yandexmaps://maps.yandex.ru/?rtext=${rtext}&rtt=auto`;
+  }
+
+  const webUrl = `https://yandex.ru/maps/?rtext=${rtext}&rtt=auto`;
 
   window.location.href = deepLink;
 
-  setTimeout(() => {
-    window.open(webUrl, '_blank');
-  }, 500);
+  if (mode === 'maps') {
+    setTimeout(() => {
+      window.open(webUrl, '_blank');
+    }, 1000);
+  }
 }
 
 export function openInGoogle(lat: number, lon: number) {
