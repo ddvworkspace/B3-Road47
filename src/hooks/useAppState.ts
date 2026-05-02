@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { POINTS_DATA } from '../data/points';
 import { Point, Visit, User, AuthState } from '../types';
 import { getDistance } from '../lib/geoUtils';
+import { compressImage } from '../lib/imageUtils';
 import { db, auth } from '../lib/firebase';
 import { 
   doc, 
@@ -23,13 +24,33 @@ const STORAGE_KEY_ROUTE = 'b3_road47_current_route';
 export function useAppState() {
   const [points] = useState<Point[]>(POINTS_DATA);
   const [visits, setVisits] = useState<Visit[]>(() => {
-    const saved = localStorage.getItem('b3_road47_visits');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('b3_road47_visits');
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      // Safety: remove any large images that might have been saved in previous versions
+      return Array.isArray(parsed) ? parsed.map((v: any) => ({ ...v, photoBase64: v.photoBase64?.length > 1000 ? '' : v.photoBase64 })) : [];
+    } catch (e) {
+      console.error("Error loading visits from storage", e);
+      return [];
+    }
   });
   const [hasLoadedVisits, setHasLoadedVisits] = useState(false);
   const [authState, setAuthState] = useState<AuthState>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_AUTH);
-    return saved ? JSON.parse(saved) : { isAuthenticated: false, user: null };
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_AUTH);
+      if (!saved) return { isAuthenticated: false, user: null };
+      const parsed = JSON.parse(saved);
+      // Safety: Strip large avatar if it exists in storage to prevent crashes on load
+      if (parsed.user && parsed.user.avatarBase64 && parsed.user.avatarBase64.length > 20000) {
+        parsed.user.avatarBase64 = null;
+      }
+      return parsed;
+    } catch (e) {
+      console.error("Critical error loading auth state, resetting...", e);
+      localStorage.removeItem(STORAGE_KEY_AUTH);
+      return { isAuthenticated: false, user: null };
+    }
   });
   const [currentRoute, setCurrentRoute] = useState<number[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_ROUTE);
@@ -43,9 +64,22 @@ export function useAppState() {
 
   const isAdmin = authState.user?.email === 'ddvworkspace@gmail.com';
 
-  // Sync Auth State
+  // Sync Auth State - stripping large data for storage safety
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(authState));
+    if (authState.user) {
+      const stateToSave = {
+        ...authState,
+        user: {
+          ...authState.user,
+          avatarBase64: (authState.user.avatarBase64 && authState.user.avatarBase64.length > 20000) 
+            ? null 
+            : authState.user.avatarBase64
+        }
+      };
+      localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(stateToSave));
+    } else {
+      localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(authState));
+    }
   }, [authState]);
 
   // Sync Current Route
@@ -53,17 +87,23 @@ export function useAppState() {
     localStorage.setItem(STORAGE_KEY_ROUTE, JSON.stringify(currentRoute));
   }, [currentRoute]);
 
-  // Sync Visits to LocalStorage
+  // Sync Visits to LocalStorage (Metadata only, no large photos)
   useEffect(() => {
-    localStorage.setItem('b3_road47_visits', JSON.stringify(visits));
+    const visitsToSave = visits.map(v => ({ ...v, photoBase64: '' }));
+    localStorage.setItem('b3_road47_visits', JSON.stringify(visitsToSave));
   }, [visits]);
 
-  // Firebase Auth Initial Sign-in - Simplified
+  // Firebase Auth Initial Sign-in - Adjusted for iframe and mobile stability
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      // In this environment, we might already have a user, or we might not need sign-in 
-      // if rules are open during debugging. Removing forced signInAnonymously to avoid errors.
-      if (fbUser) {
+      if (!fbUser) {
+        try { 
+          // Attempt sign-in but don't let it block or crash the app if restricted in iframe
+          await signInAnonymously(auth); 
+        } catch (e) { 
+          console.warn("Auth restriction (can happen in some preview modes):", e); 
+        }
+      } else {
         console.log("Authenticated as:", fbUser.uid);
       }
       setIsAuthReady(true);
@@ -220,11 +260,14 @@ export function useAppState() {
     if (!authState.user) return;
     if (visits.some(v => v.pointId === pointId)) return;
     
+    // Compress image before storage
+    const compressedPhoto = await compressImage(photoBase64, 800, 800);
+
     const visitId = pointId.toString();
     const visitData: Visit = {
       pointId,
       timestamp: Date.now(),
-      photoBase64
+      photoBase64: compressedPhoto
     };
 
     // Optimistic update
@@ -301,7 +344,11 @@ export function useAppState() {
   const updateProfile = async (fullName: string, phone: string, motorcycle: string, avatarBase64?: string) => {
     if (!authState.user) return;
     const updates: any = { fullName, phone, motorcycle };
-    if (avatarBase64) updates.avatarBase64 = avatarBase64;
+    
+    if (avatarBase64) {
+      const compressedAvatar = await compressImage(avatarBase64, 400, 400);
+      updates.avatarBase64 = compressedAvatar;
+    }
     
     await updateDoc(doc(db, 'users', authState.user.id), updates);
     setAuthState(prev => ({

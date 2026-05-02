@@ -27,9 +27,19 @@ service cloud.firestore {
       );
     }
 
-    // Global access for debugging
-    match /{document=**} {
-      allow read, write: if true;
+    // Collections
+    match /users/{userId} {
+      // Allow reading everyone for leaderboard
+      allow read: if true; 
+      
+      // Allow creation and updates
+      allow create: if true;
+      allow update: if true; // In production we would restrict this, but for now we allow sync
+      
+      match /visits/{visitId} {
+        allow read: if true;
+        allow write: if true;
+      }
     }
   }
 }

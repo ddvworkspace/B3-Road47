@@ -446,14 +446,30 @@ function PointListView({ state, onPointClick }: { state: any, onPointClick: (p: 
 function PointDetails({ point, state, onClose, onNavClick }: { point: Point, state: any, onClose: () => void, onNavClick: (t: any) => void }) {
   const [isCheckingIn, setIsCheckingIn] = useState(false);
 
+  const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
+
   const handleCheckIn = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setIsProcessingPhoto(true);
       const reader = new FileReader();
-      reader.onloadend = () => {
-        state.checkIn(point.id, reader.result as string);
-        setIsCheckingIn(false);
-        onClose();
+      reader.onloadend = async () => {
+        try {
+          const rawBase64 = reader.result as string;
+          // Compression happens here to reduce memory footprint immediately
+          await state.checkIn(point.id, rawBase64);
+          setIsCheckingIn(false);
+          onClose();
+        } catch (error: any) {
+          console.error("Check-in failed:", error);
+          alert(`Ошибка: ${error.message || "Не удалось сохранить фото. Попробуйте уменьшить размер."}`);
+        } finally {
+          setIsProcessingPhoto(false);
+        }
+      };
+      reader.onerror = () => {
+        alert("Ошибка при чтении файла.");
+        setIsProcessingPhoto(false);
       };
       reader.readAsDataURL(file);
     }
@@ -521,9 +537,12 @@ function PointDetails({ point, state, onClose, onNavClick }: { point: Point, sta
                 <h3 className="text-2xl font-black underline underline-offset-8 decoration-amber-500">Загрузка доказательств</h3>
                 <p className="text-zinc-500 text-sm">Сделай фото своего стального коня на фоне этой точки</p>
              </div>
-             <label className="block w-full bg-zinc-100 text-zinc-950 font-black py-5 rounded-2xl text-center cursor-pointer active:bg-white shadow-xl uppercase tracking-widest">
-                Сделать фото
-                <input type="file" accept="image/*" className="hidden" onChange={handleCheckIn} />
+             <label className={cn(
+                "block w-full bg-zinc-100 text-zinc-950 font-black py-5 rounded-2xl text-center cursor-pointer active:bg-white shadow-xl uppercase tracking-widest",
+                isProcessingPhoto && "opacity-50 cursor-wait"
+             )}>
+                {isProcessingPhoto ? 'Сжимаем фото...' : 'Сделать фото'}
+                {!isProcessingPhoto && <input type="file" accept="image/*" className="hidden" onChange={handleCheckIn} />}
              </label>
              <button onClick={() => setIsCheckingIn(false)} className="w-full text-zinc-500 font-bold py-2">Отмена</button>
           </motion.div>
