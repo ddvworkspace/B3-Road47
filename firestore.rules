@@ -27,14 +27,9 @@ service cloud.firestore {
       );
     }
 
-    // Collections
-    match /users/{userId} {
-      // Allow reading user list for leaderboard
-      allow read, write: if true; // DEBUG: Allow all for now
-      
-      match /visits/{visitId} {
-        allow read, write: if true; // DEBUG: Allow all for now
-      }
+    // Global access for debugging
+    match /{document=**} {
+      allow read, write: if true;
     }
   }
 }

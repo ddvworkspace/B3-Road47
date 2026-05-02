@@ -48,9 +48,11 @@ export function openRouteInYandex(points: { lat: number, lon: number }[], userLo
   
   let deepLink = '';
   if (mode === 'navigator') {
-    // Navigator format for multi-point is often just to and points
+    // Navigator format for multi-point: lat_to, lon_to and via points
     const lastPoint = routePoints[routePoints.length - 1];
-    deepLink = `yandexnavi://build_route_on_map?lat_to=${lastPoint.lat}&lon_to=${lastPoint.lon}`;
+    const viaPoints = routePoints.slice(0, -1);
+    const viaParams = viaPoints.map((p, i) => `lat_via_${i}=${p.lat}&lon_via_${i}=${p.lon}`).join('&');
+    deepLink = `yandexnavi://build_route_on_map?lat_to=${lastPoint.lat}&lon_to=${lastPoint.lon}${viaParams ? `&${viaParams}` : ''}`;
   } else {
     deepLink = `yandexmaps://maps.yandex.ru/?rtext=${rtext}&rtt=auto`;
   }
@@ -59,11 +61,12 @@ export function openRouteInYandex(points: { lat: number, lon: number }[], userLo
 
   window.location.href = deepLink;
 
-  if (mode === 'maps') {
-    setTimeout(() => {
+  // Fallback to web maps if it's the 'maps' mode or if we want to ensure they get something
+  setTimeout(() => {
+    if (mode === 'maps') {
       window.open(webUrl, '_blank');
-    }, 1000);
-  }
+    }
+  }, 1000);
 }
 
 export function openInGoogle(lat: number, lon: number) {

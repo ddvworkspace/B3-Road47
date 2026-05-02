@@ -22,7 +22,10 @@ const STORAGE_KEY_ROUTE = 'b3_road47_current_route';
 
 export function useAppState() {
   const [points] = useState<Point[]>(POINTS_DATA);
-  const [visits, setVisits] = useState<Visit[]>([]);
+  const [visits, setVisits] = useState<Visit[]>(() => {
+    const saved = localStorage.getItem('b3_road47_visits');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [hasLoadedVisits, setHasLoadedVisits] = useState(false);
   const [authState, setAuthState] = useState<AuthState>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_AUTH);
@@ -50,7 +53,12 @@ export function useAppState() {
     localStorage.setItem(STORAGE_KEY_ROUTE, JSON.stringify(currentRoute));
   }, [currentRoute]);
 
-  // Firebase Auth Initial Sign-in - Simplified to avoid restricted operation errors in iframes
+  // Sync Visits to LocalStorage
+  useEffect(() => {
+    localStorage.setItem('b3_road47_visits', JSON.stringify(visits));
+  }, [visits]);
+
+  // Firebase Auth Initial Sign-in - Simplified
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       // In this environment, we might already have a user, or we might not need sign-in 
@@ -82,43 +90,38 @@ export function useAppState() {
     return () => unsubscribe();
   }, [isAuthReady]);
 
-  // Sync Current User to Firestore if they are missing (Migration/Recovery)
+  // Sync Current User to Firestore (Migration/Recovery)
   useEffect(() => {
     if (isAuthReady && authState.isAuthenticated && authState.user) {
-      // Small delay to ensure allUsers is populated if this is not a fresh login
-      const timeoutId = setTimeout(() => {
-        const normalizedEmail = (authState.user?.email || '').toLowerCase().trim();
-        const expectedId = normalizedEmail.replace(/[^a-zA-Z0-9]/g, '_');
+      const normalizedEmail = (authState.user?.email || '').toLowerCase().trim();
+      const expectedId = normalizedEmail.replace(/[^a-zA-Z0-9]/g, '_');
+      
+      if (expectedId && authState.user?.id !== expectedId) {
+        console.log("Migrating user ID format...");
+        const updatedUser = { ...authState.user, id: expectedId } as User;
+        setAuthState(prev => ({ ...prev, user: updatedUser }));
+        return; 
+      }
+
+      // Sync to Firestore without waiting for allUsers
+      if (!isLoading) {
+        const userRef = doc(db, 'users', authState.user!.id);
+        const syncData: any = {
+          ...authState.user,
+          totalPoints: authState.user!.totalPoints || 0
+        };
+        if (auth.currentUser) {
+          syncData.uid = auth.currentUser.uid;
+        }
         
-        if (expectedId && authState.user?.id !== expectedId) {
-          console.log("Migrating user ID format...");
-          const updatedUser = { ...authState.user, id: expectedId } as User;
-          setAuthState(prev => ({ ...prev, user: updatedUser }));
-          return; 
-        }
-
-        const existsInAllUsers = allUsers.some(u => u.id === authState.user?.id);
-        const currentUserDoc = allUsers.find(u => u.id === authState.user?.id);
-
-        if (!existsInAllUsers && auth.currentUser && !isLoading) {
-          console.log("Syncing user to Firestore...");
-          const userRef = doc(db, 'users', authState.user!.id);
-          setDoc(userRef, {
-            ...authState.user,
-            uid: auth.currentUser.uid,
-            totalPoints: authState.user!.totalPoints || 0
-          }, { merge: true }).catch(err => console.error("Sync error:", err));
-        } else if (currentUserDoc && currentUserDoc.uid !== auth.currentUser?.uid && auth.currentUser) {
-          // UID mismatch or missing, update it - Rules now allow this if UID was null
-          if (!currentUserDoc.uid) {
-             updateDoc(doc(db, 'users', authState.user!.id), { uid: auth.currentUser.uid })
-              .catch(err => console.error("UID update error:", err));
-          }
-        }
-      }, 1000);
-      return () => clearTimeout(timeoutId);
+        setDoc(userRef, syncData, { merge: true })
+          .catch(err => {
+            console.error("User sync error:", err);
+            // If it's a permission error, it might be because the rules are still propagating
+          });
+      }
     }
-  }, [isAuthReady, authState.isAuthenticated, authState.user?.id, allUsers.length, isLoading]);
+  }, [isAuthReady, authState.isAuthenticated, authState.user?.id, isLoading]);
 
   // Fetch Current User's Visits
   useEffect(() => {
@@ -199,9 +202,14 @@ export function useAppState() {
       referredBy: referrerId || null
     } as User;
 
-    await setDoc(userRef, newUser);
-    setAuthState({ isAuthenticated: true, user: newUser });
-    return { success: true };
+    try {
+      await setDoc(userRef, newUser);
+      setAuthState({ isAuthenticated: true, user: newUser });
+      return { success: true };
+    } catch (error) {
+      console.error("Registration error:", error);
+      return { success: false, message: 'Ошибка при сохранении данных. Попробуйте еще раз.' };
+    }
   };
 
   const logout = () => {
@@ -219,19 +227,30 @@ export function useAppState() {
       photoBase64
     };
 
+    // Optimistic update
+    setVisits(prev => [...prev, visitData]);
+
     try {
       await setDoc(doc(db, 'users', authState.user.id, 'visits', visitId), visitData);
     } catch (error) {
       console.error("Check-in error:", error);
+      // Revert if failed
+      setVisits(prev => prev.filter(v => v.pointId !== pointId));
     }
   };
 
   const cancelCheckIn = async (pointId: number) => {
     if (!authState.user) return;
+    
+    // Optimistic update
+    const previousVisits = [...visits];
+    setVisits(prev => prev.filter(v => v.pointId !== pointId));
+
     try {
       await deleteDoc(doc(db, 'users', authState.user.id, 'visits', pointId.toString()));
     } catch (error) {
       console.error("Cancel check-in error:", error);
+      setVisits(previousVisits);
     }
   };
 
