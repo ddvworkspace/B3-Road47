@@ -16,12 +16,13 @@ export interface Visit {
 
 export interface User {
   id: string;
+  uid?: string;
   email: string;
   fullName: string;
   phone: string;
   motorcycle: string;
   avatarBase64?: string;
-  referredBy?: string;
+  referredBy?: string | null;
   referralCode?: string;
   totalPoints: number;
 }

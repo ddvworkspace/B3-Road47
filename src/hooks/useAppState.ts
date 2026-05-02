@@ -2,18 +2,27 @@ import { useState, useEffect, useCallback } from 'react';
 import { POINTS_DATA } from '../data/points';
 import { Point, Visit, User, AuthState } from '../types';
 import { getDistance } from '../lib/geoUtils';
+import { db, auth } from '../lib/firebase';
+import { 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  collection, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  deleteDoc,
+  updateDoc
+} from 'firebase/firestore';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 
-const STORAGE_KEY_VISITS = 'b3_road47_visits';
 const STORAGE_KEY_AUTH = 'b3_road47_auth';
 const STORAGE_KEY_ROUTE = 'b3_road47_current_route';
-const STORAGE_KEY_USERS = 'b3_road47_users';
 
 export function useAppState() {
   const [points] = useState<Point[]>(POINTS_DATA);
-  const [visits, setVisits] = useState<Visit[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_VISITS);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [visits, setVisits] = useState<Visit[]>([]);
   const [authState, setAuthState] = useState<AuthState>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_AUTH);
     return saved ? JSON.parse(saved) : { isAuthenticated: false, user: null };
@@ -22,44 +31,111 @@ export function useAppState() {
     const saved = localStorage.getItem(STORAGE_KEY_ROUTE);
     return saved ? JSON.parse(saved) : [];
   });
-  const [allUsers, setAllUsers] = useState<User[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_USERS);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [allUsers, setAllUsers] = useState<User[]>([]);
   const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
   const [selectedUserProfile, setSelectedUserProfile] = useState<any | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isAuthReady, setIsAuthReady] = useState(false);
 
   const isAdmin = authState.user?.email === 'ddvworkspace@gmail.com';
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_VISITS, JSON.stringify(visits));
-    if (authState.user) {
-      const currentScore = visits.reduce((acc, v) => acc + (POINTS_DATA.find(p => p.id === v.pointId)?.points || 0), 0);
-      if (authState.user.totalPoints !== currentScore) {
-        setAuthState(prev => {
-          if (!prev.user) return prev;
-          return {
-            ...prev,
-            user: { ...prev.user, totalPoints: currentScore }
-          };
-        });
-        setAllUsers(prev => prev.map(u => u.id === authState.user?.id ? { ...u, totalPoints: currentScore } : u));
-      }
-    }
-  }, [visits, authState.user?.id]);
-
+  // Sync Auth State
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_AUTH, JSON.stringify(authState));
   }, [authState]);
 
+  // Sync Current Route
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_ROUTE, JSON.stringify(currentRoute));
   }, [currentRoute]);
 
+  // Firebase Auth Initial Sign-in
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(allUsers));
-  }, [allUsers]);
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (!fbUser) {
+        try { await signInAnonymously(auth); } catch (e) { console.error(e); }
+      }
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
 
+  // Fetch All Users (for Rating and Admin)
+  useEffect(() => {
+    if (!isAuthReady) return;
+    // Removing orderBy from Firestore to ensure users without totalPoints field are still fetched
+    const q = query(collection(db, 'users'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const usersList = snapshot.docs.map(doc => ({ 
+        ...doc.data(), 
+        id: doc.id 
+      } as User));
+      setAllUsers(usersList);
+      setIsLoading(false);
+    }, (error) => {
+      console.error("Snapshot error:", error);
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, [isAuthReady]);
+
+  // Sync Current User to Firestore if they are missing (Migration/Recovery)
+  useEffect(() => {
+    if (isAuthReady && authState.isAuthenticated && authState.user && !isLoading) {
+      const normalizedEmail = (authState.user.email || '').toLowerCase().trim();
+      const expectedId = normalizedEmail.replace(/[^a-zA-Z0-9]/g, '_');
+      
+      if (expectedId && authState.user.id !== expectedId) {
+        // Migration: transition from old random IDs to new email-based IDs
+        console.log("Migrating user ID format...");
+        const updatedUser = { ...authState.user, id: expectedId };
+        setAuthState(prev => ({ ...prev, user: updatedUser }));
+        return; 
+      }
+
+      const existsInAllUsers = allUsers.some(u => u.id === authState.user?.id);
+      if (!existsInAllUsers && auth.currentUser) {
+        // Current user thinks they are logged in but not in DB
+        console.log("Syncing user to Firestore...");
+        const userRef = doc(db, 'users', authState.user.id);
+        setDoc(userRef, {
+          ...authState.user,
+          uid: auth.currentUser.uid,
+          totalPoints: authState.user.totalPoints || 0
+        }, { merge: true });
+      } else if (existsInAllUsers && authState.user.uid !== auth.currentUser?.uid && auth.currentUser) {
+        // UID mismatch or missing, update it
+        updateDoc(doc(db, 'users', authState.user.id), { uid: auth.currentUser.uid });
+      }
+    }
+  }, [isAuthReady, authState.isAuthenticated, authState.user?.id, allUsers.length, isLoading]);
+
+  // Fetch Current User's Visits
+  useEffect(() => {
+    if (authState.user?.id) {
+      const q = query(collection(db, 'users', authState.user.id, 'visits'), orderBy('timestamp', 'asc'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const visitsList = snapshot.docs.map(doc => doc.data() as Visit);
+        setVisits(visitsList);
+      });
+      return () => unsubscribe();
+    } else {
+      setVisits([]);
+    }
+  }, [authState.user?.id]);
+
+  // Sync Total Points to Firestore
+  useEffect(() => {
+    if (authState.user?.id) {
+      const currentScore = visits.reduce((acc, v) => acc + (POINTS_DATA.find(p => p.id === v.pointId)?.points || 0), 0);
+      if (authState.user.totalPoints !== currentScore) {
+        updateDoc(doc(db, 'users', authState.user.id), { totalPoints: currentScore });
+        setAuthState(prev => prev.user ? { ...prev, user: { ...prev.user, totalPoints: currentScore } } : prev);
+      }
+    }
+  }, [visits, authState.user?.id]);
+
+  // Geolocation
   useEffect(() => {
     if ("geolocation" in navigator) {
       const watchId = navigator.geolocation.watchPosition(
@@ -76,41 +152,66 @@ export function useAppState() {
     }
   }, []);
 
-  const login = (email: string, fullName: string, phone: string, motorcycle: string, referrerId?: string) => {
-    setAllUsers(prev => {
-      let user = prev.find(u => u.email === email);
-      if (!user) {
-        user = {
-          id: Math.random().toString(36).substr(2, 9),
-          email,
-          fullName,
-          phone,
-          motorcycle,
-          totalPoints: 0,
-          referredBy: referrerId
-        };
-        const newUsers = [...prev, user];
-        setAuthState({ isAuthenticated: true, user });
-        return newUsers;
-      }
-      setAuthState({ isAuthenticated: true, user });
-      return prev;
-    });
+  const login = async (email: string) => {
+    // Standardize email
+    const normalizedEmail = email.toLowerCase().trim();
+    const userDoc = await getDoc(doc(db, 'users', normalizedEmail.replace(/[^a-zA-Z0-9]/g, '_')));
+    
+    if (userDoc.exists()) {
+      const userData = userDoc.data() as User;
+      setAuthState({ isAuthenticated: true, user: userData });
+      return { success: true };
+    }
+    return { success: false, message: 'Пользователь не найден. Пожалуйста, зарегистрируйтесь.' };
+  };
+
+  const register = async (email: string, fullName: string, phone: string, motorcycle: string, referrerId?: string) => {
+    const normalizedEmail = email.toLowerCase().trim();
+    const userId = normalizedEmail.replace(/[^a-zA-Z0-9]/g, '_');
+    const userRef = doc(db, 'users', userId);
+    const userDoc = await getDoc(userRef);
+
+    if (userDoc.exists()) {
+      return { success: false, message: 'Этот email уже зарегистрирован.' };
+    }
+
+    const newUser: User = {
+      id: userId,
+      uid: auth.currentUser?.uid, // Store the Firebase UID for security rules
+      email: normalizedEmail,
+      fullName,
+      phone,
+      motorcycle,
+      totalPoints: 0,
+      referredBy: referrerId || null
+    } as User;
+
+    await setDoc(userRef, newUser);
+    setAuthState({ isAuthenticated: true, user: newUser });
+    return { success: true };
   };
 
   const logout = () => {
     setAuthState({ isAuthenticated: false, user: null });
   };
 
-  const checkIn = (pointId: number, photoBase64: string) => {
-    setVisits(prev => {
-       if (prev.some(v => v.pointId === pointId)) return prev;
-       return [...prev, { pointId, timestamp: Date.now(), photoBase64 }];
-    });
+  const checkIn = async (pointId: number, photoBase64: string) => {
+    if (!authState.user) return;
+    if (visits.some(v => v.pointId === pointId)) return;
+    
+    const visitId = pointId.toString();
+    const visitData: Visit = {
+      pointId,
+      timestamp: Date.now(),
+      photoBase64
+    };
+
+    await setDoc(doc(db, 'users', authState.user.id, 'visits', visitId), visitData);
   };
 
-  const cancelCheckIn = (pointId: number) => {
-    setVisits(prev => prev.filter(v => v.pointId !== pointId));
+  const cancelCheckIn = async (pointId: number) => {
+    if (!authState.user) return;
+    await deleteDoc(doc(db, 'users', authState.user.id, 'visits', pointId.toString()));
   };
 
   const addToRoute = (pointId: number) => {
@@ -157,32 +258,34 @@ export function useAppState() {
 
   const totalScore = visits.reduce((acc, v) => acc + (POINTS_DATA.find(p => p.id === v.pointId)?.points || 0), 0);
 
-  const updateProfile = (fullName: string, phone: string, motorcycle: string, avatarBase64?: string) => {
-    setAuthState(prev => {
-      const newUser = prev.user ? { 
-        ...prev.user, 
-        fullName, 
-        phone, 
-        motorcycle,
-        avatarBase64: avatarBase64 || prev.user.avatarBase64 
-      } : null;
-      if (newUser) {
-        setAllUsers(users => users.map(u => u.id === newUser.id ? newUser : u));
-      }
-      return { ...prev, user: newUser };
-    });
+  const updateProfile = async (fullName: string, phone: string, motorcycle: string, avatarBase64?: string) => {
+    if (!authState.user) return;
+    const updates: any = { fullName, phone, motorcycle };
+    if (avatarBase64) updates.avatarBase64 = avatarBase64;
+    
+    await updateDoc(doc(db, 'users', authState.user.id), updates);
+    setAuthState(prev => ({
+      ...prev,
+      user: prev.user ? { ...prev.user, ...updates } : null
+    }));
   };
 
-  const deleteUser = (userId: string) => {
+  const deleteUser = async (userId: string) => {
     if (!isAdmin) return;
-    setAllUsers(allUsers.filter(u => u.id !== userId));
+    await deleteDoc(doc(db, 'users', userId));
   };
 
   const getLeaderboard = () => {
     return allUsers.map(u => ({ 
       ...u, 
-      isMe: u.id === authState.user?.id 
-    })).sort((a, b) => b.totalPoints - a.totalPoints);
+      isMe: u.id === authState.user?.id,
+      totalPoints: u.totalPoints || 0
+    })).sort((a, b) => {
+      if (b.totalPoints !== a.totalPoints) {
+        return b.totalPoints - a.totalPoints;
+      }
+      return (a.fullName || '').localeCompare(b.fullName || '');
+    });
   };
 
   return {
@@ -194,6 +297,7 @@ export function useAppState() {
     selectedUserProfile,
     setSelectedUserProfile,
     login,
+    register,
     logout,
     updateProfile,
     checkIn,
@@ -207,6 +311,8 @@ export function useAppState() {
     deleteUser,
     isAdmin,
     cancelCheckIn,
-    totalScore
+    totalScore,
+    isLoading,
+    allUsers
   };
 }

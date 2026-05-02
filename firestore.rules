@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && (
+        request.auth.uid == userId || 
+        get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'ddvworkspace@gmail.com' ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
+        // Check by doc ID if doc ID is email-based
+        (exists(/databases/$(database)/documents/users/ddvworkspace_gmail_com) && 
+         get(/databases/$(database)/documents/users/ddvworkspace_gmail_com).data.uid == request.auth.uid)
+      );
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'email', 'fullName']) &&
+             data.email is string && data.fullName is string &&
+             data.fullName.size() <= 100;
+    }
+
+    function isValidVisit(data) {
+      return data.keys().hasAll(['pointId', 'timestamp', 'photoBase64']) &&
+             data.pointId is int && data.timestamp is int;
+    }
+
+    // Collections
+    match /users/{userId} {
+      // Leaderboard access
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      
+      // Allow registration
+      allow create: if isSignedIn() && isValidUser(request.resource.data);
+      
+      // Allow update if owner (using UID stored in doc) or admin
+      allow update: if (isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin())) && (
+        request.resource.data.email == resource.data.email &&
+        request.resource.data.id == resource.data.id
+      );
+      
+      allow delete: if isAdmin();
+
+      match /visits/{visitId} {
+        allow read: if isSignedIn(); // Allow reading visits for leaderboard/verification
+        allow create: if isOwner(userId) && isValidVisit(request.resource.data);
+        allow update, delete: if isOwner(userId) || isAdmin();
+      }
+    }
+  }
+}

@@ -52,8 +52,19 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [selectedPoint, setSelectedPoint] = useState<Point | null>(null);
 
+  if (state.isLoading) {
+    return (
+      <div className="flex flex-col h-screen max-w-md mx-auto bg-zinc-950 items-center justify-center p-8">
+        <div className="w-16 h-16 bg-amber-500 rounded-[35%] rotate-12 flex items-center justify-center animate-pulse shadow-[0_0_30px_rgba(245,158,11,0.3)]">
+          <Navigation size={32} className="-rotate-12 text-black fill-black" />
+        </div>
+        <p className="mt-8 text-amber-500 font-black tracking-widest text-[10px] uppercase animate-pulse">Зажигание...</p>
+      </div>
+    );
+  }
+
   if (!state.authState.isAuthenticated) {
-    return <AuthView login={state.login} />;
+    return <AuthView login={state.login} register={state.register} />;
   }
 
   return (
@@ -455,7 +466,7 @@ function PointDetails({ point, state, onClose }: { point: Point, state: any, onC
              </div>
              <label className="block w-full bg-zinc-100 text-zinc-950 font-black py-5 rounded-2xl text-center cursor-pointer active:bg-white shadow-xl uppercase tracking-widest">
                 Сделать фото
-                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleCheckIn} />
+                <input type="file" accept="image/*" className="hidden" onChange={handleCheckIn} />
              </label>
              <button onClick={() => setIsCheckingIn(false)} className="w-full text-zinc-500 font-bold py-2">Отмена</button>
           </motion.div>
@@ -867,12 +878,14 @@ function VisitDetails({ visit, point, onClose, onCancel }: { visit: Visit, point
   );
 }
 
-function AuthView({ login }: { login: any }) {
+function AuthView({ login, register }: { login: any, register: any }) {
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [motorcycle, setMotorcycle] = useState('');
   const [isNewUser, setIsNewUser] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -882,11 +895,26 @@ function AuthView({ login }: { login: any }) {
     }
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const params = new URLSearchParams(window.location.search);
-    const referrerId = params.get('ref') || undefined;
-    login(email, fullName, phone, motorcycle, referrerId);
+    setError('');
+    setLoading(true);
+    
+    try {
+      if (isNewUser) {
+        const params = new URLSearchParams(window.location.search);
+        const referrerId = params.get('ref') || undefined;
+        const result = await register(email, fullName, phone, motorcycle, referrerId);
+        if (!result.success) setError(result.message);
+      } else {
+        const result = await login(email);
+        if (!result.success) setError(result.message);
+      }
+    } catch (err: any) {
+      setError('Произошла ошибка. Попробуйте еще раз.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -903,6 +931,11 @@ function AuthView({ login }: { login: any }) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {error && (
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-500 text-xs font-bold text-center">
+              {error}
+            </motion.div>
+          )}
           <input 
             type="email" placeholder="Email" required
             className="w-full bg-zinc-900 border border-zinc-800 rounded-3xl py-4 px-7 font-medium outline-none focus:ring-4 focus:ring-amber-500/10 focus:border-amber-500 transition-all"
@@ -929,16 +962,20 @@ function AuthView({ login }: { login: any }) {
           )}
           <button 
             type="submit"
-            className="w-full bg-amber-500 text-black font-black py-5 rounded-[2rem] text-xl shadow-2xl shadow-amber-500/20 active:scale-95 transition-all uppercase tracking-widest"
+            disabled={loading}
+            className="w-full bg-amber-500 text-black font-black py-5 rounded-[2rem] text-xl shadow-2xl shadow-amber-500/20 active:scale-95 transition-all uppercase tracking-widest disabled:opacity-50"
           >
-            {isNewUser ? 'Завести мотор' : 'В гараж'}
+            {loading ? 'Зажигание...' : (isNewUser ? 'Завести мотор' : 'В гараж')}
           </button>
         </form>
 
         <div className="text-center">
           <button 
             type="button"
-            onClick={() => setIsNewUser(!isNewUser)}
+            onClick={() => {
+              setIsNewUser(!isNewUser);
+              setError('');
+            }}
             className="text-zinc-500 font-black text-xs uppercase tracking-widest underline underline-offset-8"
           >
             {isNewUser ? 'Уже есть допуск?' : 'Стать участником'}

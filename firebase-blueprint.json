@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Participant of the moto quest",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "fullName": { "type": "string" },
+        "phone": { "type": "string" },
+        "motorcycle": { "type": "string" },
+        "totalPoints": { "type": "number" },
+        "avatarBase64": { "type": "string" },
+        "referredBy": { "type": "string" },
+        "isAdmin": { "type": "boolean" }
+      },
+      "required": ["id", "email", "fullName"]
+    },
+    "Visit": {
+      "title": "Visit",
+      "description": "Check-in at a point",
+      "type": "object",
+      "properties": {
+        "pointId": { "type": "number" },
+        "timestamp": { "type": "number" },
+        "photoBase64": { "type": "string" }
+      },
+      "required": ["pointId", "timestamp", "photoBase64"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile data"
+    },
+    "/users/{userId}/visits/{visitId}": {
+      "schema": "Visit",
+      "description": "Check-in history for a user"
+    }
+  }
+}
